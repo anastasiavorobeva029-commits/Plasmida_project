@@ -3,7 +3,7 @@ import numpy as np
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio import Restriction
-
+import itertools
 
 def read_fasta_file(file_path):
 
@@ -37,29 +37,41 @@ def find_site_in_circular_dna(sequence_str, enzyme):
 
 
 def suggest_cloning_enzymes(donor_seq, vector_seq):
-
-    # Распространенные коммерческие рестриктазы (чтобы не перебирать тысячи редких ферментов)
+    """Автоматически подбирает идеальную пару ферментов для направленного клонирования."""
     common_enzymes = Restriction.CommOnly
+    donor_candidates = [str(enz) for enz in common_enzymes if len(find_site_in_circular_dna(donor_seq, enz)) == 1]
+    vector_candidates = [str(enz) for enz in common_enzymes if len(find_site_in_circular_dna(vector_seq, enz)) == 1]
 
-    donor_candidates = []
-    vector_candidates = []
+    # Находим общие single cutters
+    shared_candidates = list(set(donor_candidates) & set(vector_candidates))
 
-    for enz in common_enzymes:
-        # Ищем сайты в доноре
-        if len(find_site_in_circular_dna(donor_seq, enz)) == 1:
-            donor_candidates.append(str(enz))
-        # Ищем сайты в векторе
-        if len(find_site_in_circular_dna(vector_seq, enz)) == 1:
-            vector_candidates.append(str(enz))
+    ideal_pairs = []
 
-    # Находим пересечение: ферменты, уникальные для обеих плазмид
-    shared_candidates = sorted(list(set(donor_candidates) & set(vector_candidates)))
+    # Перебираем все возможные пары ферментов (сочетания по 2)
+    for name1, name2 in itertools.combinations(shared_candidates, 2):
+        enz1 = Restriction.AllEnzymes.get(name1)
+        enz2 = Restriction.AllEnzymes.get(name2)
 
-    print(f"Уникальные сайты в Доноре (single cutters): {len(donor_candidates)}")
-    print(f"Уникальные сайты в Векторе (single cutters): {len(vector_candidates)}")
-    print(f"Общие ферменты-кандидаты для клонирования: {', '.join(shared_candidates)}\n")
+        # Условие 1: Оба фермента должны быть липкоконечными (это эффективнее)
+        if enz1.is_blunt() or enz2.is_blunt():
+            continue
 
-    return shared_candidates
+        # Условие 2: Ферменты должны иметь разные липкие концы (защита от самолигации вектора)
+        if check_compatibility(enz1, enz2):
+            continue
+
+        # Если пара идеальна, сохраняем её
+        ideal_pairs.append((name1, name2))
+
+    if not ideal_pairs:
+       print("Не удалось автоматически найти идеальную пару ферментов для направленного клонирования!")
+
+    best_pair = ideal_pairs[0]
+
+    print(f"Найдено отличных пар для направленного клонирования: {len(ideal_pairs)}")
+    print(f"Автоматически выбрана наилучшая пара: {best_pair[0]} + {best_pair[1]}\n")
+
+    return best_pair[0], best_pair[1]
 
 
 def cut_circle_dna(sequence_str, pos_1, enz_1, pos_2, enz_2):
@@ -139,7 +151,7 @@ def perform_cloning(
 
     if None in enz_objects:
         invalid_mask = np.equal(enz_objects, None)
-        raise ValueError(f"Ферменты не найдены в базе данных: {', '.join(enz_names[invalid_mask])}")
+        print(f"Ферменты не найдены в базе данных: {', '.join(enz_names[invalid_mask])}")
 
     enz = np.array(enz_objects)
 
@@ -154,11 +166,15 @@ def perform_cloning(
 
     if not (comp_left and comp_right):
         print("Концы несовместимы!")
+
         if not comp_left:
             print(f"  - Конец после {enz_d1_name} не совместим с концом после {enz_v1_name}")
+
         if not comp_right:
             print(f"  - Конец после {enz_d2_name} не совместим с концом после {enz_v2_name}")
+
         return None
+
     print("Концы совместимы\n")
 
     # 3. Поиск сайтов (теперь передаем чистые переменные, IDE довольна)
@@ -223,45 +239,35 @@ def save_plasmid(sequence, filepath):
     print(f"\nСохранено: {filepath}")
 
 def main():
-    # Пути к файлам
     donor_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pUC19_sequence.fasta"
-    vector_file = (
-        r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pBR322.fasta"
-    )
+    vector_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pBR322.fasta"
     output_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\recombinant_plasmid.fasta"
-
-    # Загрузка данных
 
     donor_df = read_fasta_file(donor_file)
     vector_df = read_fasta_file(vector_file)
     donor_seq = donor_df.loc[0, "sequence"]
     vector_seq = vector_df.loc[0, "sequence"]
 
-
     print(f"Донор: pUC19 - {len(donor_seq)} п.н.")
     print(f"Вектор: pBR322 - {len(vector_seq)} п.н.\n")
 
-    # Выполняем клонирование (теперь можно передавать разные ферменты!)
-    # Пример: Донор режем EcoRI и HindIII, Вектор режем EcoRI и HindIII
+    selected_enz1, selected_enz2 = suggest_cloning_enzymes(donor_seq, vector_seq)
+
     final_plasmid = perform_cloning(
         donor_seq,
         vector_seq,
-        enz_d1_name="EcoRI",
-        enz_d2_name="HindIII",
-        enz_v1_name="EcoRI",
-        enz_v2_name="HindIII",
+        enz_d1_name=selected_enz1,
+        enz_d2_name=selected_enz2,
+        enz_v1_name=selected_enz1,
+        enz_v2_name=selected_enz2,
     )
 
-    # Выводим результаты и сохраняем
     if final_plasmid:
         print_results(final_plasmid, donor_seq, vector_seq)
         save_plasmid(final_plasmid, output_file)
 
-
-
 if __name__ == "__main__":
     main()
-
 
 
 
