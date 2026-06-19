@@ -21,79 +21,93 @@ def read_fasta_file(file_path):
 
     return df
 
-def find_site_in_circular_dna(sequence_str, enzyme_1, enzyme_2):
+
+def find_site_in_circular_dna(sequence_str, enzyme):
 
     original_length = len(sequence_str)
 
     seq_obj = Seq(sequence_str * 2)
 
-    sites_1 = np.array(enzyme_1.search(seq_obj))
-    sites_2 = np.array(enzyme_2.search(seq_obj))
+    sites = np.array(enzyme.search(seq_obj))
 
-    valid_sites_1 = sites_1[sites_1 < original_length].tolist()
-    valid_sites_2 = sites_2[sites_2 < original_length].tolist()
+    # Отбираем сайты, начавшиеся в первой копии плазмиды
+    valid_sites = sites[sites <= original_length].tolist()
 
-    return valid_sites_1, valid_sites_2
+    return valid_sites
+
+
+def suggest_cloning_enzymes(donor_seq, vector_seq):
+
+    # Распространенные коммерческие рестриктазы (чтобы не перебирать тысячи редких ферментов)
+    common_enzymes = Restriction.CommOnly
+
+    donor_candidates = []
+    vector_candidates = []
+
+    for enz in common_enzymes:
+        # Ищем сайты в доноре
+        if len(find_site_in_circular_dna(donor_seq, enz)) == 1:
+            donor_candidates.append(str(enz))
+        # Ищем сайты в векторе
+        if len(find_site_in_circular_dna(vector_seq, enz)) == 1:
+            vector_candidates.append(str(enz))
+
+    # Находим пересечение: ферменты, уникальные для обеих плазмид
+    shared_candidates = sorted(list(set(donor_candidates) & set(vector_candidates)))
+
+    print(f"Уникальные сайты в Доноре (single cutters): {len(donor_candidates)}")
+    print(f"Уникальные сайты в Векторе (single cutters): {len(vector_candidates)}")
+    print(f"Общие ферменты-кандидаты для клонирования: {', '.join(shared_candidates)}\n")
+
+    return shared_candidates
+
 
 def cut_circle_dna(sequence_str, pos_1, enz_1, pos_2, enz_2):
-
     cut_1 = pos_1 + enz_1.fst3 - 1
     cut_2 = pos_2 + enz_2.fst3 - 1
 
-    # Определяем внутренний и внешний фрагменты
     if cut_1 < cut_2:
-        # Внутренний фрагмент между сайтами
-        fragment_inside = sequence_str[cut_1:cut_2]
-
-        # Внешний фрагмент (остов плазмиды)
+        fragment_between = sequence_str[cut_1:cut_2]
         fragment_outside = sequence_str[cut_2:] + sequence_str[:cut_1]
 
-        return fragment_inside, fragment_outside
-
     else:
-        # Если сайты идут в обратном порядке
-        fragment_inside = sequence_str[cut_1:] + sequence_str[:cut_2]
+        fragment_between = sequence_str[cut_1:] + sequence_str[:cut_2]
         fragment_outside = sequence_str[cut_2:cut_1]
 
-        return fragment_inside, fragment_outside
-
+    return fragment_between, fragment_outside
 
 def check_compatibility(enz_donor, enz_vector):
 
-    # Если это один и тот же фермент - совместимы
-    if str(enz_donor) == str(enz_vector):
-        return True
-
-    # Если оба тупоконечные - совместимы
     if enz_donor.is_blunt() and enz_vector.is_blunt():
         return True
 
-    # Проверяем оверханги (липкие концы)
-    if enz_donor.is_3overhang() == enz_vector.is_3overhang():
-        return str(enz_donor.ovhgseq) == str(enz_vector.ovhgseq)
+    if enz_donor.is_blunt() != enz_vector.is_blunt():
+        return False
 
-    return False
+    if enz_donor.is_5overhang() != enz_vector.is_5overhang():
+        return False
+
+    return str(enz_donor.ovhgseq) == str(enz_vector.ovhgseq)
 
 def validate_site(sites, enzyme_name, plasmid_name):
-    # Проверяем, что сайт встречается не больше одного раза
+
     if not sites:
-        print(f"Сайт {enzyme_name} не найден в {plasmid_name}!")
+        print(f"Критическая ошибка: Сайт {enzyme_name} не найден в {plasmid_name}!")
 
     if len(sites) > 1:
-        print(f"Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name}!")
+        print(f"Критическая ошибка: Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name}!")
 
     return sites[0]
 
 
 def load_plasmids(donor_path, vector_path, donor_name="Донор", vector_name="Вектор"):
-    """Загружает плазмиды из файлов с заданными именами."""
+
     donor_df = read_fasta_file(donor_path)
     vector_df = read_fasta_file(vector_path)
 
     donor_seq = donor_df.loc[0, 'sequence']
     vector_seq = vector_df.loc[0, 'sequence']
 
-    # Используем ПОНЯТНЫЕ имена, а не ID из файла
     print(f"Донор: {donor_name} - {len(donor_seq)} п.н.")
     print(f"Вектор: {vector_name} - {len(vector_seq)} п.н.\n")
 
@@ -101,8 +115,8 @@ def load_plasmids(donor_path, vector_path, donor_name="Донор", vector_name=
 
 
 def find_and_validate_sites(seq, enz1, enz2, plasmid_name):
-    """Находит и валидирует сайты рестрикции."""
-    sites1, sites2 = find_site_in_circular_dna(seq, enz1, enz2)
+
+    sites1, sites2 = find_site_in_circular_dna(seq, enz1)
 
     pos1 = validate_site(sites1, str(enz1), plasmid_name)
     pos2 = validate_site(sites2, str(enz2), plasmid_name)
@@ -111,93 +125,137 @@ def find_and_validate_sites(seq, enz1, enz2, plasmid_name):
     return pos1, pos2
 
 
-def perform_cloning(donor_seq, vector_seq, enzyme1_name='EcoRI', enzyme2_name='HindIII'):
+def perform_cloning(
+        donor_seq,
+        vector_seq,
+        enz_d1_name="EcoRI",
+        enz_d2_name="HindIII",
+        enz_v1_name="EcoRI",
+        enz_v2_name="HindIII",
+):
+    # 1. Валидация наличия ферментов в базе
+    enz_names = np.array([enz_d1_name, enz_d2_name, enz_v1_name, enz_v2_name])
+    enz_objects = [Restriction.AllEnzymes.get(name) for name in enz_names]
 
-    # 1. Получаем ферменты
-    enz1 = Restriction.AllEnzymes.get(enzyme1_name)
-    enz2 = Restriction.AllEnzymes.get(enzyme2_name)
+    if None in enz_objects:
+        invalid_mask = np.equal(enz_objects, None)
+        raise ValueError(f"Ферменты не найдены в базе данных: {', '.join(enz_names[invalid_mask])}")
 
-    if not enz1 or not enz2:
-        missing = [name for name, enz in [(enzyme1_name, enz1), (enzyme2_name, enz2)] if not enz]
-        print(f"Ферменты не найдены в базе данных: {', '.join(missing)}")
+    enz = np.array(enz_objects)
 
-    print(f"Используемые ферменты: {enz1} и {enz2}\n")
+    print(f"Рестриктазы донора:  {enz_d1_name} + {enz_d2_name}")
+    print(f"Рестриктазы вектора: {enz_v1_name} + {enz_v2_name}\n")
 
-    # 2. Проверяем совместимость (так как ферменты одинаковые, это скорее sanity check)
-    if not check_compatibility(enz1, enz1) or not check_compatibility(enz2, enz2):
-        print("Крипты совместимости не пройдены: ферменты не совместимы сами с собой.")
+    # 2. Проверка совместимости концов
+    enz_d1, enz_d2, enz_v1, enz_v2 = enz
 
+    comp_left = check_compatibility(enz_d1, enz_v1)
+    comp_right = check_compatibility(enz_d2, enz_v2)
+
+    if not (comp_left and comp_right):
+        print("Концы несовместимы!")
+        if not comp_left:
+            print(f"  - Конец после {enz_d1_name} не совместим с концом после {enz_v1_name}")
+        if not comp_right:
+            print(f"  - Конец после {enz_d2_name} не совместим с концом после {enz_v2_name}")
+        return None
     print("Концы совместимы\n")
 
+    # 3. Поиск сайтов (теперь передаем чистые переменные, IDE довольна)
+    pos_d1 = validate_site(find_site_in_circular_dna(donor_seq, enz_d1), enz_d1_name, "Донор")
+    pos_d2 = validate_site(find_site_in_circular_dna(donor_seq, enz_d2), enz_d2_name, "Донор")
+    pos_v1 = validate_site(find_site_in_circular_dna(vector_seq, enz_v1), enz_v1_name, "Вектор")
+    pos_v2 = validate_site(find_site_in_circular_dna(vector_seq, enz_v2), enz_v2_name, "Вектор")
 
-    pos1_d, pos2_d = find_and_validate_sites(donor_seq, enz1, enz2, "Донор")
-    pos1_v, pos2_v = find_and_validate_sites(vector_seq, enz1, enz2, "Вектор")
-    print()
+    print(f"Донор координаты: {enz_d1_name}={pos_d1}, {enz_d2_name}={pos_d2}")
+    print(f"Вектор координаты: {enz_v1_name}={pos_v1}, {enz_v2_name}={pos_v2}\n")
 
-    # 4. Разрезаем и лигируем
-    insert, _ = cut_circle_dna(donor_seq, pos1_d, enz1, pos2_d, enz2)
-    _, vector_backbone = cut_circle_dna(vector_seq, pos1_v, enz1, pos2_v, enz2)
+    # 4. Резка плазмид (Движемся строго от Фермента_1 к Ферменту_2)
+    insert, _ = cut_circle_dna(donor_seq, pos_d1, enz_d1, pos_d2, enz_d2)
+    _, vector_backbone = cut_circle_dna(vector_seq, pos_v1, enz_v1, pos_v2, enz_v2)
 
-    final_plasmid = vector_backbone + insert
+    # 5. Лигирование с коррекцией на перекрытие липких концов
+    is_blunt_mask = np.array([e.is_blunt() for e in enz])
+    ovhg_lengths = np.array([0 if blunt else len(e.ovhgseq) for blunt, e in zip(is_blunt_mask, enz)])
 
-    # 5. Красивый вывод результатов
-    print(f"Вставка:   {len(insert):>5} п.н.")
-    print(f"Остов:     {len(vector_backbone):>5} п.н.")
+    total_ovhg = ovhg_lengths[0] + ovhg_lengths[1]
+
+    # Склеиваем строки и убираем дублирующийся липкий конец
+    final_plasmid = (vector_backbone + insert)[:-total_ovhg] if total_ovhg > 0 else vector_backbone + insert
+
+    # Расчет физических длин фрагментов дуплекса
+    real_insert_len = len(insert) - total_ovhg / 2
+    real_backbone_len = len(vector_backbone) - total_ovhg / 2
+
+    print(f"Вставка:   {int(real_insert_len):>5} п.н.")
+    print(f"Остов:     {int(real_backbone_len):>5} п.н.")
     print(f"Результат: {len(final_plasmid):>5} п.н.\n")
 
     return final_plasmid
 
 def print_results(final_plasmid, donor_seq, vector_seq):
+    if final_plasmid is None:
+        return
 
-    len_final = len(final_plasmid)
-    len_vector = len(vector_seq)
-    diff = len_final - len_vector
+    diff = len(final_plasmid) - len(vector_seq)
 
-    # 1. Оценка изменения размера
     if diff > 0:
         print(f"Размер увеличился на {diff} п.н.")
     elif diff < 0:
-        print(f" Размер уменьшился на {abs(diff)} п.н.")
+        print(f"Размер уменьшился на {abs(diff)} п.н.")
     else:
         print("Итоговая длина совпадает с исходным вектором.")
 
-    identity_map = {
-        donor_seq: "Последовательность идентична донору.",
-        vector_seq: "Последовательность идентична вектору"
-    }
-    status = identity_map.get(final_plasmid, "Создана уникальная рекомбинантная плазмида.")
-
-    print(status)
+    if final_plasmid == donor_seq:
+        print("Последовательность идентична донору.")
+    elif final_plasmid == vector_seq:
+        print("Последовательность идентична вектору.")
+    else:
+        print("Создана уникальная рекомбинантная плазмида.")
 
 def save_plasmid(sequence, filepath):
-    """Сохраняет плазмиду в FASTA файл."""
-    with open(filepath, 'w') as f:
+    if sequence is None:
+        return
+    with open(filepath, "w") as f:
         f.write(f">recombinant_plasmid_{len(sequence)}bp\n")
         for i in range(0, len(sequence), 60):
-            f.write(sequence[i:i+60] + "\n")
+            f.write(sequence[i : i + 60] + "\n")
     print(f"\nСохранено: {filepath}")
 
 def main():
+    # Пути к файлам
+    donor_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pUC19_sequence.fasta"
+    vector_file = (
+        r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pBR322.fasta"
+    )
+    output_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\recombinant_plasmid.fasta"
 
-    donor_file = r'C:\Users\Nastya\PycharmProjects\plasmida_project\data\pUC19_sequence.fasta'
-    vector_file = r'C:\Users\Nastya\PycharmProjects\plasmida_project\data\pBR322.fasta'
+    # Загрузка данных
 
-    donor_name = "pUC19"
-    vector_name = "pBR322"
+    donor_df = read_fasta_file(donor_file)
+    vector_df = read_fasta_file(vector_file)
+    donor_seq = donor_df.loc[0, "sequence"]
+    vector_seq = vector_df.loc[0, "sequence"]
 
-    donor_seq, vector_seq, donor_name, vector_name = load_plasmids(
-        donor_file, vector_file, donor_name, vector_name
+
+    print(f"Донор: pUC19 - {len(donor_seq)} п.н.")
+    print(f"Вектор: pBR322 - {len(vector_seq)} п.н.\n")
+
+    # Выполняем клонирование (теперь можно передавать разные ферменты!)
+    # Пример: Донор режем EcoRI и HindIII, Вектор режем EcoRI и HindIII
+    final_plasmid = perform_cloning(
+        donor_seq,
+        vector_seq,
+        enz_d1_name="EcoRI",
+        enz_d2_name="HindIII",
+        enz_v1_name="EcoRI",
+        enz_v2_name="HindIII",
     )
 
-    # Выполняем клонирование
-    final_plasmid = perform_cloning(donor_seq, vector_seq)
-
-    # Выводим результаты
-    print_results(final_plasmid, donor_seq, vector_seq)
-
-    # Сохраняем результат
-    output_file = r'C:\Users\Nastya\PycharmProjects\plasmida_project\data\recombinant_plasmid.fasta'
-    save_plasmid(final_plasmid, output_file)
+    # Выводим результаты и сохраняем
+    if final_plasmid:
+        print_results(final_plasmid, donor_seq, vector_seq)
+        save_plasmid(final_plasmid, output_file)
 
 
 
