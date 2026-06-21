@@ -60,6 +60,10 @@ def cut_circle_dna(sequence_str, pos, enz_1, enz_2):
     # Остов - всё остальное (кольцевая ДНК)
     fragment_outside = sequence_str[end:] + sequence_str[:start]
 
+    # Можно добавить информацию о ферментах, если они переданы
+    if enz_1 and enz_2:
+        print(f"Разрезано ферментами {enz_1} и {enz_2}")
+
     return fragment_between, fragment_outside
 
 # теперь проверим совместимость концов по гороскопу
@@ -105,13 +109,13 @@ def validate_site(sites, enzyme_name, plasmid_name):
 
 # жмем на рычаг и бежим клонировать
 def perform_cloning(
-        donor_seq,
-        vector_seq,
-        enz_d1_name="EcoRI",
-        enz_d2_name="HindIII",
-        enz_v1_name="EcoRI",
-        enz_v2_name="HindIII",
-        insert_orientation="forward"
+    donor_seq,
+    vector_seq,
+    enz_d1_name="EcoRI",
+    enz_d2_name="HindIII",
+    enz_v1_name="EcoRI",
+    enz_v2_name="HindIII",
+    insert_orientation="forward",
 ):
     # Проверка на одинаковые ферменты
     if enz_d1_name == enz_d2_name:
@@ -134,23 +138,27 @@ def perform_cloning(
     print(f"Рестриктазы донора:  {enz_d1_name} + {enz_d2_name}")
     print(f"Рестриктазы вектора: {enz_v1_name} + {enz_v2_name}\n")
 
-# Валидация сайтов с обработкой ошибок
+    # Валидация сайтов с обработкой ошибок (перехватываем ValueError из validate_site)
 
     pos_d1 = validate_site(
-        find_site_in_circular_dna(donor_seq, enz_d1), enz_d1_name, "Донор")
-
+        find_site_in_circular_dna(donor_seq, enz_d1), enz_d1_name, "Донор"
+    )
     pos_d2 = validate_site(
-        find_site_in_circular_dna(donor_seq, enz_d2), enz_d2_name, "Донор")
-
+        find_site_in_circular_dna(donor_seq, enz_d2), enz_d2_name, "Донор"
+    )
     pos_v1 = validate_site(
-        find_site_in_circular_dna(vector_seq, enz_v1), enz_v1_name, "Вектор")
-
+        find_site_in_circular_dna(vector_seq, enz_v1), enz_v1_name, "Вектор"
+    )
     pos_v2 = validate_site(
-        find_site_in_circular_dna(vector_seq, enz_v2), enz_v2_name, "Вектор")
+        find_site_in_circular_dna(vector_seq, enz_v2), enz_v2_name, "Вектор"
+    )
 
-
-    print(f"Донор координаты (1-based): {enz_d1_name}={pos_d1}, {enz_d2_name}={pos_d2}")
-    print(f"Вектор координаты (1-based): {enz_v1_name}={pos_v1}, {enz_v2_name}={pos_v2}\n")
+    print(
+        f"Донор координаты (1-based): {enz_d1_name}={pos_d1}, {enz_d2_name}={pos_d2}"
+    )
+    print(
+        f"Вектор координаты (1-based): {enz_v1_name}={pos_v1}, {enz_v2_name}={pos_v2}\n"
+    )
 
     # Проверка совместимости стыков
     comp_left = check_compatibility(enz_d1, enz_v1)
@@ -169,16 +177,18 @@ def perform_cloning(
 
     print("Концы совместимы\n")
 
-    # Резка плазмид
-    insert, _ = cut_circle_dna(donor_seq, (pos_d1, pos_d2))
+    # Резка плазмид (Передаем все 4 обязательных аргумента)
+    insert, _ = cut_circle_dna(donor_seq, (pos_d1, pos_d2), enz_d1, enz_d2)
 
     # Изменяем ориентацию вставки если нужно
     if insert_orientation == "reverse":
         insert = str(Seq(insert).reverse_complement())
         print("Вставка реверсирована (обратная ориентация)")
 
-    # Вырезаем остов из вектора
-    _, vector_backbone = cut_circle_dna(vector_seq, (pos_v1, pos_v2))
+    # Вырезаем остов из вектора (Передаем все 4 обязательных аргумента)
+    _, vector_backbone = cut_circle_dna(
+        vector_seq, (pos_v1, pos_v2), enz_v1, enz_v2
+    )
 
     # Лигазное сшивание
     final_plasmid = vector_backbone + insert
@@ -188,7 +198,6 @@ def perform_cloning(
     print(f"Результат: {len(final_plasmid):>5} п.н.\n")
 
     return final_plasmid
-
 
 
 def print_results(final_plasmid, vector_seq):
