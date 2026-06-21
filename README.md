@@ -1,27 +1,99 @@
-Input data:
+# In Silico Cloning Tool
 
-Donor plasmid DNA sequence, from which the fragment (the "insert") is to be excised;
+Инструмент для автоматизации и цифрового моделирования (in silico) процесса молекулярного клонирования фрагмента ДНК из плазмиды-донора в плазмиду-вектор по двум сайтам рестрикции. Скрипт автоматически проверяет совместимость липких или тупых концов, контролирует уникальность сайтов гидролиза и генерирует готовую рекомбинантную последовательность.
 
-Vector plasmid DNA sequence, into which the insert is to be integrated;
+---
 
-A pair of distinct restriction enzymes for the donor plasmid (e.g., EcoRI and XhoI);
+## Основной функционал
 
-A pair of distinct restriction enzymes for the vector plasmid.
-Note: The restriction enzymes specified for the donor plasmid and the vector plasmid may be identical.
+* **Автоматический парсинг FASTA:** Чтение файлов плазмид (.fasta, .fa, .fna) с помощью Biopython и структурирование данных в pandas.DataFrame.
+* **Поддержка кольцевых молекул ДНК:** Корректный поиск сайтов рестрикции методом циклического удвоения цепочки. Скрипт найдет сайт, даже если он разрезан условной границей начала/конца файла.
+* **Интерактивный подбор ферментов:** Встроенное консольное меню со списком популярных коммерческих рестриктаз. Возможность выбора как по номеру в списке, так и по точному названию.
+* **Строгий контроль совместимости (Overhang Compatibility):** Анализ типов концов (тупые/липкие), направления оверхангов и их взаимной комплементарности (проверка на отжиг перед лигированием).
+* **Визуальный анализ стыков (Junction Analysis):** Информативный вывод левого (Вектор -> Вставка) и правого (Вставка -> Вектор) стыков в консоль с цветовой разметкой (ANSI-коды) и указанием точек разреза.
+* **Экспорт в FASTA с маркировкой регистров:** Сохранение финальной плазмиды в файл с разбиением по 60 символов в строке. При этом для наглядности остов вектора записан в ВЕРХНЕМ регистре, а тело вставки — в нижнем регистре.
 
-It is guaranteed that the specified restriction enzyme names are available in standard Python libraries; there is no need to create a custom restriction enzyme database.
+---
 
-Both plasmids are considered circular. The fragment within the donor plasmid is defined as the region between the cleavage sites determined by the specified pair of restriction enzymes. This fragment—the "insert"—must be integrated into the vector plasmid, replacing the region between the cleavage sites determined by the vector's respective pair of restriction enzymes.
+## Блок-схема работы алгоритма
 
-Output:
-The resulting sequence of the recombinant vector plasmid containing the insert in the same orientation as in the original donor sequence.
-
-The program must validate that:
-
-The restriction sites for the specified enzymes are actually present in their respective plasmids.
-
-Each restriction site occurs exactly once in its respective plasmid.
-
-The ends of the insert generated after restriction digestion are compatible with the corresponding ends of the digested vector plasmid.
-
-The program must support cloning with both blunt ends and all types of complementary sticky ends.
+```text
+       [ НАЧАЛО: Запуск main() ]
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │     Окна Tkinter:      │
+       │ Выбор файлов Донора и  │
+       │        Вектора         │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │   read_fasta_file()    │
+       │ Парсинг FASTA в Pandas │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │ select_enzyme_pair()   │
+       │ Интерактивный выбор    │
+       │    пар рестриктаз      │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │   perform_cloning()    │
+       │  (Главный цикл сборки) │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │find_site_in_circular_dna│
+       │ Удвоение цепи (ДНК * 2)│──► [ Поиск координат сайтов ]
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │     validate_site()    │
+       │ Проверка уникальности  │──► [ ValueError, если сайтов 0 или >1 ]
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │  check_compatibility() │
+       │ Проверка липких/тупых  │──► [ Прерывание: концы несовместимы ]
+       │        концов          │
+       └───────────┬────────────┘
+                   │
+                   ├─ Концы совместимы (True)
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │Расчет индексов (0-based)│
+       │ Вырезание Вставки и    │
+       │    Остова Вектора      │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │     Лигирование:       │
+       │ final_plasmid =        │
+       │ backbone + insert      │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │    print_results()     │
+       │ Цветовой анализ стыков │
+       │       в консоли        │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │ Сохранение результатов │
+       │ Вектор (ВЕРХНИЙ РЕГИСТР)│
+       │  Вставка (нижний регистр)│
+       └───────────┬────────────┘
+                   │
+                   ▼
+         [ КОНЕЦ: Запись FASTA ]
