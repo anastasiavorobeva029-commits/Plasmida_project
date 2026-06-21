@@ -1,529 +1,397 @@
+import os
+from tkinter import filedialog, Tk
 import pandas as pd
 import numpy as np
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio import Restriction
-import os
-from tkinter import filedialog, Tk
 
-
+# чтение FASTA файла в DataFrame
 def read_fasta_file(file_path):
+
+    # инициализируем пустой список для хранения данных по каждой последовательности
     sequences = []
+
+    # построчно парсим FASTA-файл с помощью SeqIO из Biopython
     for record in SeqIO.parse(file_path, "fasta"):
-        sequences.append(
-            {
-                "id": record.id,
-                "description": record.description,
-                "sequence": str(record.seq).upper(),
-                "length": len(record.seq),
-            }
-        )
-    return pd.DataFrame(sequences)
+        # добавляем словарь с извлеченными данными в наш список
+        sequences.append({
+                "id": record.id,  # уникальный идентификатор последовательности (после '>')
+                "description": record.description,  # полная строка описания
+                "sequence": str(record.seq).upper(),  # сама последовательность, приведенная к верхнему регистру
+                "length": len(record.seq)}) # длина последовательности (количество нуклеотид)
 
+    return pd.DataFrame(sequences) # преобразуем список словарей в объект pandas DataFrame и возвращаем его
 
-def find_site_in_circular_dna(sequence_str, enzyme, verbose=True):
-
-    if not sequence_str:
-        raise ValueError("Последовательность не может быть пустой")
-
-    if enzyme is None:
-        raise ValueError("Фермент не найден в библиотеке")
+# поиск сайтов рестрикции в кольцевой ДНК с использованием удвоения цепочки
+def find_site_in_circular_dna(sequence_str, enzyme, plasmid_type="", verbose=True):
+    """Поиск сайтов рестрикции в кольцевой ДНК с использованием удвоения цепочки"""
+    if not sequence_str or enzyme is None:
+        raise ValueError("Пустая последовательность или фермент не найден")
 
     original_length = len(sequence_str)
-    # Для кольцевой ДНК удваиваем строку, чтобы поймать сайты на стыке краев
     doubled_seq = Seq(sequence_str * 2)
 
-    # Поиск сайтов
     sites = np.array(enzyme.search(doubled_seq))
-
-    # Оставляем только те сайты, которые начинаются в пределах первой (оригинальной) копии
-    # Используем < вместо <=, так как сайт не может начинаться на позиции original_length
-    valid_sites = sites[sites < original_length].tolist()
-    valid_sites = sorted(set(valid_sites))
+    valid_sites = sorted(list(set(sites[sites <= original_length])))
 
     if verbose:
-        print(f"  Фермент {enzyme}: {len(valid_sites)} сайтов. Позиции: {valid_sites}")
+        # Получаем имя фермента прямо из объекта
+        enzyme_name = enzyme.__name__
+        positions_str = ', '.join(str(int(pos)) for pos in valid_sites)
+        if plasmid_type:
+            print(f"  {plasmid_type}: {enzyme_name} ({enzyme.site}) → {len(valid_sites)} сайт(ов). Позиции: {positions_str}")
+        else:
+            print(f"  {enzyme_name} ({enzyme.site}): {len(valid_sites)} сайт(ов). Позиции: {positions_str}")
 
     return valid_sites
 
-
-def cut_circle_dna(sequence_str, pos):
-    cut_1 = pos[0] - 1  # перевод в 0-based
-    cut_2 = pos[1] - 1
-
-    # Получаем два варианта разреза кольца
-    if cut_1 < cut_2:
-        frag_a = sequence_str[cut_1:cut_2]
-        frag_b = sequence_str[cut_2:] + sequence_str[:cut_1]
-    else:
-        frag_a = sequence_str[cut_1:] + sequence_str[:cut_2]
-        frag_b = sequence_str[cut_2:cut_1]
-
-    # Для донора важен строгий порядок от enz_1 к enz_2
-    # Но для вектора остов - это всегда большая часть кольца.
-    # Поэтому мы вернем оба фрагмента, упорядочив их по длине для удобства.
-    if len(frag_a) < len(frag_b):
-        short_fragment = frag_a
-        long_fragment = frag_b
-    else:
-        short_fragment = frag_b
-        long_fragment = frag_a
-
-    return short_fragment, long_fragment
-
-# теперь проверим совместимость концов по гороскопу
+#  проверка совместимости липких или тупых концов двух ферментов рестрикции для успешного лигирования
 def check_compatibility(enz_donor, enz_vector):
-    # Оба тупые - идеально
+
+    # оба тупые
     if enz_donor.is_blunt() and enz_vector.is_blunt():
         return True
 
-    # Один тупой, другой липкий - несовместимы
+    # один тупой, другой липкий
     if enz_donor.is_blunt() != enz_vector.is_blunt():
         return False
 
-    # Проверяем типы оверхангов (5' или 3')
-    if np.sign(enz_donor.ovhg) != np.sign(enz_vector.ovhg):
+    # разные типы липких концов
+    if np.sign(enz_donor.ovhg) != np.sign(enz_vector.ovhg) or abs(enz_donor.ovhg) != abs(enz_vector.ovhg):
         return False
 
-    # Проверяем длину
-    if abs(enz_donor.ovhg) != abs(enz_vector.ovhg):
-        return False
-
-    # Для совместимости оверханги должны быть обратно-комплементарны
+    # проверка комплементарности оверхангов
     donor_overhang = str(enz_donor.ovhgseq)
     vector_overhang = str(enz_vector.ovhgseq)
 
-    # Проверяем, комплементарны ли концы
-    # (один из них должен быть обратно-комплементарным другому)
+    # проверяем, совпадает ли последовательность донора с обратным комплементом вектора,
+    # если они комплементарны, то смогут отжечься друг с другом для последующего сшивания лигазой
     return donor_overhang == str(Seq(vector_overhang).reverse_complement())
 
-
-# проверяем нашу криворукость, то есть, безопасность
+# валидация уникальности сайта рестрикции
 def validate_site(sites, enzyme_name, plasmid_name):
 
+    # проверка на наличие сайта: если список позиций пуст, значит фермент не режет эту ДНК
     if not sites:
         raise ValueError(f"Сайт {enzyme_name} не найден в {plasmid_name}")
 
+    # проверка на уникальность сайта: нужно иметь один сайт рестрикции, если найдено больше - плазмида развалиться
     if len(sites) > 1:
-        raise ValueError(f"Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name}. Клонирование невозможно.")
+        raise ValueError(f"Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name} (нужен уникальный)")
 
     return sites[0]
 
+# жмем на рычаг и клонируем: in silico рестрикция и лигирование фрагмента ДНК в вектор
 
-# жмем на рычаг и бежим клонировать
-def perform_cloning(
-    donor_seq,
-    vector_seq,
-    enz_d1_name="EcoRI",
-    enz_d2_name="HindIII",
-    enz_v1_name="EcoRI",
-    enz_v2_name="HindIII",
-):
-    # Проверка на одинаковые ферменты
-    if enz_d1_name == enz_d2_name:
-        print("Для донора выбраны одинаковые ферменты")
+def perform_cloning(donor_seq, vector_seq, enz_d1, enz_d2, enz_v1, enz_v2):
+
+    # проверяем, что все переданные объекты ферментов существуют
+    if None in [enz_d1, enz_d2, enz_v1, enz_v2]:
+        print("Один или несколько ферментов не найдены")
         return None
 
-    if enz_v1_name == enz_v2_name:
-        print("Для вектора выбраны одинаковые ферменты")
+    # запрещаем использовать одинаковые ферменты на одной плазмиде, чтобы не было одинаковых хвостов и проблем с ориентацией
+    if enz_d1.site == enz_d2.site or enz_v1.site == enz_v2.site:
+        print("Выбраны одинаковые ферменты для одной плазмиды.")
         return None
 
-    enz_names = np.array([enz_d1_name, enz_d2_name, enz_v1_name, enz_v2_name])
-    enz_objects = [Restriction.AllEnzymes.get(name) for name in enz_names]
+    print("Поиск сайтов рестрикции:")
 
-    if None in enz_objects:
-        invalid_mask = np.equal(enz_objects, None)
-        print(f"Ферменты не найдены в БД: {', '.join(enz_names[invalid_mask])}")
-        return None
+    # поиск и валидация координат сайтов.
+    # find_site_in_circular_dna находит координаты в кольцевой молекуле,
+    # а validate_site проверяет, что фермент делает ровно один разрез.
+    pos_d1 = validate_site(find_site_in_circular_dna(donor_seq, enz_d1, "Донор", verbose=True),
+                           enz_d1.site,"Донор")
+    pos_d2 = validate_site(find_site_in_circular_dna(donor_seq, enz_d2, "Донор", verbose=True),
+                           enz_d2.site,"Донор")
+    pos_v1 = validate_site(find_site_in_circular_dna(vector_seq, enz_v1, "Вектор", verbose=True),
+                           enz_v1.site,"Вектор")
+    pos_v2 = validate_site(find_site_in_circular_dna(vector_seq, enz_v2, "Вектор", verbose=True),
+                           enz_v2.site,"Вектор")
 
-    enz_d1, enz_d2, enz_v1, enz_v2 = enz_objects
+    # проверка липких/тупых концов на совместимость.
+    # должны совпадать первый фермент донора с первым ферментом вектора, и вторые ферменты между собой.
+    if not check_compatibility(enz_d1, enz_v1) or not check_compatibility(
+        enz_d2, enz_v2
+    ):
+        print("Концы несовместимы!")
 
-    print(f"Рестриктазы донора:  {enz_d1_name} + {enz_d2_name}")
-    print(f"Рестриктазы вектора: {enz_v1_name} + {enz_v2_name}\n")
-
-    # Валидация сайтов с обработкой ошибок
-    pos_d1 = validate_site(find_site_in_circular_dna(donor_seq, enz_d1), enz_d1_name, "Донор")
-    pos_d2 = validate_site(find_site_in_circular_dna(donor_seq, enz_d2), enz_d2_name, "Донор")
-    pos_v1 = validate_site(find_site_in_circular_dna(vector_seq, enz_v1), enz_v1_name, "Вектор")
-    pos_v2 = validate_site(find_site_in_circular_dna(vector_seq, enz_v2), enz_v2_name, "Вектор")
-
-    print(f"Донор координаты (1-based): {enz_d1_name}={pos_d1}, {enz_d2_name}={pos_d2}")
-    print(f"Вектор координаты (1-based): {enz_v1_name}={pos_v1}, {enz_v2_name}={pos_v2}\n")
-
-    # Проверка совместимости стыков
-    comp_left = check_compatibility(enz_d1, enz_v1)
-    comp_right = check_compatibility(enz_d2, enz_v2)
-
-    if not (comp_left and comp_right):
-        print("Концы несовместимы")
-        if not comp_left:
-            print(f"  - Конец после {enz_d1_name} не совместим с {enz_v1_name}")
-        if not comp_right:
-            print(f"  - Конец после {enz_d2_name} не совместим с {enz_v2_name}")
         return None
 
     print("Концы совместимы\n")
 
-    # === 1. ВЫРЕЗАЕМ ВСТАВКУ (от d1 к d2 по часовой стрелке) ===
-    # Переводим в 0-based индексы
-    cut_d1 = pos_d1 - 1
-    cut_d2 = pos_d2 - 1
+    # вырезание целевой вставки из донора
+    # переходим от 1-индексации Biopython к стандартным 0-based индексам Python
+    cut_d1, cut_d2 = pos_d1 - 1, pos_d2 - 1
 
+    # если фрагмент лежит внутри линейной строки:
     if cut_d1 < cut_d2:
         insert = donor_seq[cut_d1:cut_d2]
+
+    # если фрагмент пересекает условную точку начала/конца файла в кольцевой ДНК:
     else:
         insert = donor_seq[cut_d1:] + donor_seq[:cut_d2]
 
-    # === 2. ВЫРЕЗАЕМ ОСТОВ ВЕКТОРА (ГАРАНТИРОВАННО БОЛЬШОЙ КУСОК) ===
-    # Переводим в 0-based индексы
-    v1_idx = pos_v1 - 1
-    v2_idx = pos_v2 - 1
+    # вырезание остова вектора
+    v1_idx, v2_idx = pos_v1 - 1, pos_v2 - 1
 
-    # ПРАВИЛЬНАЯ ЛОГИКА ДЛЯ КОЛЬЦЕВОЙ ДНК:
-    # Векторный остов - это ВСЁ кольцо, КРОМЕ маленького кусочка между сайтами
+    # направленность сборки учитывает, что вектор открывается от v2 к v1.
     if v1_idx < v2_idx:
-        # Случай: v1 раньше v2 (например, EcoRI=400, HindIII=450)
-        # Берем всё, ЧТО НЕ попадает в диапазон [v1_idx:v2_idx]
         vector_backbone = vector_seq[v2_idx:] + vector_seq[:v1_idx]
-        # Для визуализации: левый стык - v1, правый стык - v2
-        left_site_pos = pos_v1
-        right_site_pos = pos_v2
-    else:
-        # Случай: v1 позже v2 (например, HindIII=448, XbaI=424)
-        # Берем всё, ЧТО НЕ попадает в диапазон [v2_idx:v1_idx]
-        vector_backbone = vector_seq[v1_idx:] + vector_seq[:v2_idx]
-        # Для визуализации: левый стык - v1, правый стык - v2
-        left_site_pos = pos_v1
-        right_site_pos = pos_v2
 
-    # === 3. ЛИГАЗНОЕ СШИВАНИЕ ===
+    else:
+        vector_backbone = vector_seq[v1_idx:] + vector_seq[:v2_idx]
+
+    # лигирование, наконец-то: физически объединяем остов вектора и вставку в новую кольцевую плазмиду
     final_plasmid = vector_backbone + insert
 
+    # вывод результатов расчетов размеров фрагментов
     print(f"Вставка:   {len(insert):>5} п.н.")
     print(f"Остов:     {len(vector_backbone):>5} п.н.")
     print(f"Результат: {len(final_plasmid):>5} п.н.\n")
 
-    # Возвращаем словарь со всеми данными для визуализации
+    # возвращаем словарь со всей метаинформацией о собранной плазмиде
     return {
-        'final_plasmid': final_plasmid,
-        'backbone_length': len(vector_backbone),
-        'insert_length': len(insert),
-        'pos_v1': pos_v1,
-        'pos_v2': pos_v2,
-        'pos_d1': pos_d1,
-        'pos_d2': pos_d2,
-        'enz_v1_name': enz_v1_name,
-        'enz_v2_name': enz_v2_name,
-        'enz_d1_name': enz_d1_name,
-        'enz_d2_name': enz_d2_name
+        "final_plasmid": final_plasmid,
+        "backbone_length": len(vector_backbone),
+        "insert_length": len(insert),
+        "pos_v1": pos_v1,
+        "pos_v2": pos_v2,
+        "pos_d1": pos_d1,
+        "pos_d2": pos_d2,
+        "enz_v1": enz_v1,
+        "enz_v2": enz_v2,
     }
 
-def print_results(final_plasmid, vector_seq, donor_seq, start_insert,
-                  enz_v1_name, enz_v2_name, pos_v1, pos_v2):
+# вывод результатов анализа стыков
+def print_results(final_plasmid, vector_seq, donor_seq,
+                  enz_v1_name, enz_v2_name, enz_v1_site, enz_v2_site,
+                  pos_v1, pos_v2):
 
+    # если клонирование завершилось неудачей на предыдущем этапе, прерываем выполнение
     if final_plasmid is None:
         return
 
-    # Основная информация о длине
+    # расчет и вывод разницы в размерах между новой конструкцией и исходным вектором
     diff = len(final_plasmid) - len(vector_seq)
+
     if diff > 0:
         print(f"Размер плазмиды увеличился на {diff} п.н.")
+
     elif diff < 0:
         print(f"Размер плазмиды уменьшился на {abs(diff)} п.н.")
+
     else:
         print("Итоговая длина совпадает с исходным вектором.")
 
-    if diff == 0 and final_plasmid == vector_seq:
-        print("Последовательность идентична исходному вектору.")
-    else:
-        print("Создана уникальная рекомбинантная плазмида")
+    # если вектор просто замкнулся сам на себя без вставки
+    print("Последовательность идентична вектору"
+          if final_plasmid == vector_seq else "Создана уникальная рекомбинантная плазмида")
 
-    # --- ИДЕАЛЬНЫЙ АНАЛИЗ ТОЧЕК СТЫКОВКИ ---
-    print("\n--- АНАЛИЗ ТОЧЕК СТЫКОВКИ (JUNCTION SITES) ---")
+    print("\n Анализ стыковки")
 
-    GREEN = "\033[92m"  # Зеленый для вставки
-    YELLOW = "\033[93m"  # Желтый для сайтов рестрикции
-    RESET = "\033[0m"  # Сброс цвета
+    # ANSI-коды для цветового выделения текста в консоли
+    GREEN, YELLOW, RESET = "\033[92m", "\033[93m", "\033[0m"
 
-    # Переводим в 0-based индексы
-    v1_idx = pos_v1 - 1
-    v2_idx = pos_v2 - 1
+    # переводим координаты Biopython (1-based) в индексы срезов Python (0-based)
+    v1_idx, v2_idx = pos_v1 - 1, pos_v2 - 1
 
-    print("Просмотр стыков ДНК крупным планом (5' -> 3'):\n")
+    # теперь по отдельности - конец вектора соединяется с началом вставки - левый стык
 
-    # === 1. ЛЕВЫЙ СТЫК (Конец остова вектора → начало вставки) ===
-    # Берем фланкирующую последовательность из оригинального вектора вокруг сайта v1
-    if v1_idx >= 30:
-        vector_left_flank = vector_seq[v1_idx - 30:v1_idx].upper()
-    else:
-        # Если сайт близко к началу, берем с учетом кольцевости
-        vector_left_flank = (vector_seq[v1_idx - 30:] + vector_seq[:v1_idx]).upper()
+    # берем 30 нуклеотидов вектора до сайта разреза v1
+    # конкатенация срезов защищает от выхода за границы строки, если v1 находится близко к началу кольца
+    vector_left_flank = (vector_seq[v1_idx - 30:] + vector_seq[:v1_idx])[-30:].upper()
 
-    # Берем начало вставки из донора (первые 40 нуклеотидов)
+    # Берем первые 40 нуклеотидов донора
     insert_left_flank = donor_seq[:40].upper()
 
-    # Подсвечиваем сайт рестрикции на векторе (последние 6 нуклеотидов перед стыком)
-    if len(vector_left_flank) >= 6:
-        vector_site = vector_left_flank[-6:]
-        vector_prefix = vector_left_flank[:-6]
-        print(f"1. Левый стык (Вектор -> Вставка):")
-        print(f"   {vector_prefix}{YELLOW}{vector_site}{RESET} ✖ {GREEN}{insert_left_flank}{RESET}...")
-        print(f"   {' ' * (len(vector_prefix) + 3)}⬆ {enz_v1_name} сайт")
-    else:
-        print(f"1. Левый стык (Вектор -> Вставка):")
-        print(f"   {vector_left_flank} ✖ {GREEN}{insert_left_flank}{RESET}...")
-        print(f"   {' ' * 30} ⬆ {enz_v1_name}\n")
+    print(f"Левый стык (Вектор -> Вставка):")
 
-    # === 2. ПРАВЫЙ СТЫК (Конец вставки → начало остова вектора) ===
-    # Берем конец вставки из донора (последние 40 нуклеотидов)
+    # выводим вектор, отрезая последние 6 нуклеотидов ([:-6]), которые красятся желтым как сайт рестрикции,
+    # а затем выводим вставку целиком зеленым цветом.
+    print(f"{vector_left_flank[:-6]}{YELLOW}{vector_left_flank[-6:]}{RESET} ✖ {GREEN}{insert_left_flank}{RESET}...")
+
+    # печатаем маркер-стрелочку строго под сайтом рестрикции
+    print(f"{' ' * 27}⬆ {enz_v1_name} ({enz_v1_site}) сайт")
+
+    # граница, где конец вставки переходит обратно в вектор - правый стык
+
+    # берем последние 40 нуклеотидов вставки
     insert_right_flank = donor_seq[-40:].upper()
 
-    # Берем фланкирующую последовательность из оригинального вектора вокруг сайта v2
-    if v2_idx + 30 <= len(vector_seq):
-        vector_right_flank = vector_seq[v2_idx:v2_idx + 30].upper()
-    else:
-        # Если сайт близко к концу, берем с учетом кольцевости
-        vector_right_flank = (vector_seq[v2_idx:] + vector_seq[:v2_idx + 30 - len(vector_seq)]).upper()
+    # берем 30 нуклеотидов вектора после сайта разреза v2.
+    # Конкатенация срезов защищает от выхода за границы, если v2 находится в самом конце линейного представления кольца.
+    vector_right_flank = (vector_seq[v2_idx:] + vector_seq[: v2_idx + 30])[:30].upper()
 
-    # Подсвечиваем сайт рестрикции на векторе (первые 6 нуклеотидов после стыка)
-    if len(vector_right_flank) >= 6:
-        vector_site = vector_right_flank[:6]
-        vector_suffix = vector_right_flank[6:]
-        print(f"2. Правый стык (Вставка -> Вектор):")
-        print(f"...{GREEN}{insert_right_flank}{RESET} ✖ {YELLOW}{vector_site}{RESET}{vector_suffix}")
-        print(f"   {' ' * (len(insert_right_flank) + 3)}⬆ {enz_v2_name} сайт")
-    else:
-        print(f"2. Правый стык (Вставка -> Вектор):")
-        print(f"...{GREEN}{insert_right_flank}{RESET} ✖ {vector_right_flank}")
-        print(f"   {' ' * 43} ⬆ {enz_v2_name}\n")
+    print(f"Правый стык (Вставка -> Вектор):")
 
-    print(f"(Обычным текстом показан остов вектора, {GREEN}Зеленым{RESET} — интегрированный фрагмент гена, "
-          f"{YELLOW}Желтым{RESET} — сайты рестрикции, ✖ — место лигирования)")
-    print("-----------------------------------------------------\n")
+    # выводим вставку (зеленый), а затем вектор, у которого первые 6 нуклеотидов ([:6]) красятся в желтый (сайт),
+    # а остальная часть вектора ([6:]) выводится стандартным цветом.
+    print(
+        f"...{GREEN}{insert_right_flank}{RESET} ✖ {YELLOW}{vector_right_flank[:6]}{RESET}{vector_right_flank[6:]}"
+    )
+    # печатаем маркер-стрелочку строго под вторым сайтом рестрикции
+    print(f"{' ' * 43}⬆ {enz_v2_name} ({enz_v2_site}) сайт")
 
+# интерактивный выбор пары ферментов через пробел
+def select_enzyme_pair(exclude=None):
 
-def save_plasmid(sequence, filepath):
+    # список наиболее часто используемых в лабораториях коммерческих рестриктаз
+    enzymes = ["EcoRI", "HindIII", "BamHI", "XhoI", "SalI",
+               "PstI", "KpnI", "NdeI", "NotI", "SacI",
+               "XbaI", "BglII", "SmaI", "SpeI", "NheI"]
 
-    with open(filepath, "w") as f:
-        f.write(f">recombinant_plasmid_{len(sequence)}bp\n")
-        for i in range(0, len(sequence), 60):
-            f.write(sequence[i : i + 60] + "\n")
-    print(f"Результат успешно сохранен: {filepath}")
+    exclude = set(exclude or [])
+    available = [e for e in enzymes if e in Restriction.AllEnzymes and e not in exclude]
 
+    print("\n Доступные ферменты:")
+    for i, enzyme in enumerate(available, 1):
+        print(f"{i:2}. {enzyme}")
 
-def select_enzyme(prompt):
-    """
-    Интерактивный выбор фермента из списка популярных или ввод своего
-
-    Args:
-        prompt: текст приглашения для пользователя
-
-    Returns:
-        название выбранного фермента
-    """
-    # Список популярных ферментов
-    popular_enzymes = [
-        "EcoRI", "HindIII", "BamHI", "XhoI", "SalI",
-        "PstI", "KpnI", "NdeI", "NotI", "SacI",
-        "XbaI", "BglII", "SmaI", "SpeI", "NheI"
-    ]
-
-    # Проверяем, какие ферменты доступны в БД
-    available = []
-    for enz in popular_enzymes:
-        if enz in Restriction.AllEnzymes:
-            available.append(enz)
-
-    print("\n" + prompt)
-    print("Доступные ферменты (введите номер или название):")
-    print("-" * 40)
-
-    # Выводим ферменты в две колонки для компактности
-    half = len(available) // 2 + len(available) % 2
-    for i in range(half):
-        left_idx = i
-        right_idx = i + half
-        left = f"{left_idx + 1:2}. {available[left_idx]:<8}" if left_idx < len(available) else ""
-        right = f"{right_idx + 1:2}. {available[right_idx]:<8}" if right_idx < len(available) else ""
-        print(f"{left:<15} {right}")
-
-    print("-" * 40)
-    print("0. Ввести название фермента вручную")
-    print("(или введите полное название фермента)")
-    print("-" * 40)
+    print("\n Введите номера или названия через пробел")
 
     while True:
-        choice = input("Ваш выбор: ").strip()
+        parts = input("Ваш выбор: ").split()
 
-        if not choice:
-            print("Ошибка: введите номер или название фермента.")
+        if len(parts) != 2:
+            print("Нужно ровно два фермента")
             continue
 
-        # Проверяем, является ли ввод числом
-        if choice.isdigit():
-            num = int(choice)
+        selected = []
 
-            if num == 0:
-                manual = input("Введите название фермента: ").strip()
-                if not manual:
-                    print("Ошибка: название не может быть пустым.")
-                    continue
-                if manual in Restriction.AllEnzymes:
-                    return manual
-                else:
-                    print(f"Ошибка: фермент '{manual}' не найден в базе данных.")
-                    continue
+        for part in parts:
+            if part.isdigit():
+                idx = int(part) - 1
+                if idx < 0 or idx >= len(available):
+                    print(f"Номер {part} вне диапазона")
+                    break
 
-            if 1 <= num <= len(available):
-                return available[num - 1]
+                selected.append(available[idx])
             else:
-                print(f"Ошибка: номер {num} вне диапазона (1-{len(available)}).")
-                continue
+                if part not in Restriction.AllEnzymes:
+                    print(f"Фермент '{part}' не найден")
+                    break
 
-        # Если ввели название фермента
+                selected.append(part)
         else:
-            if choice in Restriction.AllEnzymes:
-                return choice
-            else:
-                print(f"Ошибка: фермент '{choice}' не найден в базе данных.")
+            if selected[0] == selected[1]:
+                print("Ферменты должны быть разными")
                 continue
+
+            return selected[0], selected[1]
 
 
 def select_enzymes_for_cloning():
-    """
-    Интерактивный выбор всех 4 ферментов для клонирования
+    print(f"\n{'=' * 50}\n Выбор ферментов для клонирования \n{'=' * 50}")
 
-    Returns:
-        tuple: (enz_d1, enz_d2, enz_v1, enz_v2) или None при отмене
-    """
-    print("\n" + "=" * 50)
-    print("ВЫБОР ФЕРМЕНТОВ ДЛЯ КЛОНИРОВАНИЯ")
-    print("=" * 50)
-
-    print("\n--- Ферменты для ДОНОРА ---")
-    enz_d1 = select_enzyme("Выберите 1-й фермент для донора:")
-    enz_d2 = select_enzyme("Выберите 2-й фермент для донора:")
-
-    print("\n--- Ферменты для ВЕКТОРА ---")
-    enz_v1 = select_enzyme("Выберите 1-й фермент для вектора:")
-    enz_v2 = select_enzyme("Выберите 2-й фермент для вектора:")
-
-    # Показываем выбранные ферменты
-    print("\n" + "=" * 50)
-    print("ВЫБРАНЫ ФЕРМЕНТЫ:")
-    print(f"  Донор:  {enz_d1} + {enz_d2}")
-    print(f"  Вектор: {enz_v1} + {enz_v2}")
-    print("=" * 50 + "\n")
-
-    # Подтверждение выбора
-    confirm = input("Продолжить с этими ферментами? (y/N): ").strip().lower()
-    if confirm != 'y':
-        print("Отмена. Выход из программы.")
+    print("\n Ферменты для донора -")
+    donor = select_enzyme_pair()
+    if not donor:
         return None
 
-    return enz_d1, enz_d2, enz_v1, enz_v2
+    print("\n--- Ферменты для вектора ---")
+    vector = select_enzyme_pair()
+    if not vector:
+        return None
 
+    print(
+        f"\n{'=' * 50}\n Выбраны ферменты :\n  Донор:  {donor[0]} + {donor[1]}\n  Вектор: {vector[0]} + {vector[1]}\n{'=' * 50}\n")
+
+    return donor[0], donor[1], vector[0], vector[1]
 
 def main():
-    # Создаем скрытое фоновое окно для работы файлового диалога
+
+    # окно для работы с диалоговыми окнами файлов
     root = Tk()
-    root.withdraw()
-    root.attributes(
-        "-topmost", True
-    )
+    root.withdraw()  # прячем основное его, чтобы оно не мозолило глаза
+    root.attributes("-topmost", True)  # поверх всех окон, чтобы диалог выбора файла не прятался на задний план
 
-    print("=== Выбор файлов плазмид ===")
+    print("Выбор файлов плазмид ")
+    # запрашиваем у пользователя путь к файлу плазмиды-донора
 
-    # 1. Интерактивный выбор файла донора
-    print("Выберите FASTA-файл для плазмиды-донора:")
-    donor_file = filedialog.askopenfilename(
-        title="Выберите плазмиду-донор",
-        filetypes=[("FASTA files", "*.fasta *.fa *.fna"), ("All files", "*.*")],
-    )
-    if not donor_file:
-        print("Выбор файла отменен. Выход из программы.")
+    donor_file = filedialog.askopenfilename(title="Выберите плазмиду-донор",filetypes=[("FASTA", "*.fasta *.fa *.fna")])
+
+    # запрашиваем у пользователя путь к файлу векторной плазмиды
+    vector_file = filedialog.askopenfilename(title="Выберите векторную плазмиду", filetypes=[("FASTA", "*.fasta *.fa *.fna")])
+
+    # если пользователь закрыл одно из окон или нажал "Отмена" - выходим
+    if not donor_file or not vector_file:
+        print("Выбор файлов отменен.")
+
         return
 
-    # 2. Интерактивный выбор файла вектора
-    print("Выберите FASTA-файл для векторной плазмиды:")
-    vector_file = filedialog.askopenfilename(
-        title="Выберите векторную плазмиду",
-        filetypes=[("FASTA files", "*.fasta *.fa *.fna"), ("All files", "*.*")],
-    )
-    if not vector_file:
-        print("Выбор файла отменен. Выход из программы.")
-        return
+    # формируем путь для сохранения результата в ту же папку, где лежит вектор
+    output_file = os.path.join(os.path.dirname(vector_file), "recombinant_plasmid.fasta")
 
-    # Фиксированное имя файла для автоматического обновления результата.
-    vector_dir = os.path.dirname(vector_file)
-    output_file = os.path.join(vector_dir, "recombinant_plasmid.fasta")
-
-    # Чтение данных
+    # читаем FASTA-файлы в DataFrame
     donor_df = read_fasta_file(donor_file)
     vector_df = read_fasta_file(vector_file)
 
+    # извлекаем последовательность из первой строки (индекс 0) колонки "sequence"
     donor_seq = donor_df.loc[0, "sequence"]
     vector_seq = vector_df.loc[0, "sequence"]
 
-    donor_name = os.path.splitext(os.path.basename(donor_file))[0]
-    vector_name = os.path.splitext(os.path.basename(vector_file))[0]
+    print(f"\n Донор: {os.path.basename(donor_file)} - {len(donor_seq)} п.н.")
+    print(f"Вектор: {os.path.basename(vector_file)} - {len(vector_seq)} п.н. \n")
 
-    print("\n" + "=" * 40)
-    print(f"Донор: {donor_name} - {donor_df.loc[0, 'length']} п.н.")
-    print(f"Вектор: {vector_name} - {vector_df.loc[0, 'length']} п.н.")
-    print("=" * 40 + "\n")
-
-    # Выбор ферментов
+    # вызываем интерактивное меню для выбора ферментов
     enzymes = select_enzymes_for_cloning()
+
     if enzymes is None:
+        print("Выбор ферментов отменен.")
+
         return
 
-    enz_d1, enz_d2, enz_v1, enz_v2 = enzymes
+    # распаковываем имена выбранных ферментов
+    enz_d1_name, enz_d2_name, enz_v1_name, enz_v2_name = enzymes
 
-    # Выполнение клонирования
-    print("\n" + "=" * 60)
+    # получаем сами объекты ферментов рестрикции из базы данных Biopython Dictionary
+    enz_d1 = Restriction.AllEnzymes.get(enz_d1_name)
+    enz_d2 = Restriction.AllEnzymes.get(enz_d2_name)
+    enz_v1 = Restriction.AllEnzymes.get(enz_v1_name)
+    enz_v2 = Restriction.AllEnzymes.get(enz_v2_name)
+
+    # запускаем основной процесс in silico клонирования
     cloning_result = perform_cloning(
         donor_seq, vector_seq, enz_d1, enz_d2, enz_v1, enz_v2
     )
+    if cloning_result is None:
+        print("Клонирование не удалось.")
 
-    if cloning_result is not None:
-        # Распаковываем словарь с результатами
-        final_plasmid = cloning_result['final_plasmid']
-        len_backbone = cloning_result['backbone_length']
-        pos_v1 = cloning_result['pos_v1']
-        pos_v2 = cloning_result['pos_v2']
+        return
 
-        print("\n" + "=" * 60)
-        # Вызываем обновленную функцию print_results с правильными параметрами
-        print_results(
-            final_plasmid,
-            vector_seq,
-            donor_seq,
-            len_backbone,
-            enz_v1,
-            enz_v2,
-            pos_v1,
-            pos_v2
-        )
+    # извлекаем результаты успешной сборки
+    final_plasmid = cloning_result["final_plasmid"]
+    len_backbone = cloning_result["backbone_length"]
 
-        # Для файла: остов большими, вставка маленькими
-        file_ready_seq = (
-                final_plasmid[:len_backbone].upper()
-                + final_plasmid[len_backbone:].lower()
-        )
+    # выводим в консоль текстовый анализ получившихся стыков
+    print_results(
+        final_plasmid,
+        vector_seq,
+        donor_seq,
+        enz_v1_name,
+        enz_v2_name,
+        enz_v1.site,
+        enz_v2.site,
+        cloning_result["pos_v1"],
+        cloning_result["pos_v2"],
+    )
 
-        with open(output_file, "w") as f:
-            f.write(f">recombinant_plasmid_size_{len(final_plasmid)}bp\n")
-            for i in range(0, len(file_ready_seq), 60):
-                f.write(file_ready_seq[i: i + 60] + "\n")
+    # показываем, что получилось - остов и вставленный фрагмент
+    file_ready_seq = (final_plasmid[:len_backbone].upper()+ final_plasmid[len_backbone:].lower())
 
-        print(f"Результат успешно сохранен в файле: {output_file}")
-        print("-----------------------------------------------------\n")
-    else:
-        print("\nКлонирование не удалось.")
+    # записываем финальную плазмиду в формате FASTA
+    with open(output_file, "w") as f:
 
+        # пишем заголовок с указанием итогового размера плазмиды
+        f.write(f">recombinant_plasmid_size_{len(final_plasmid)}bp\n")
+
+        # разбиваем длинную строку ДНК на стандартные строки по 60 символов для соответствия стандарту FASTA
+        for i in range(0, len(file_ready_seq), 60):
+            f.write(file_ready_seq[i : i + 60] + "\n")
+
+    print(f"Результат успешно сохранен: {output_file}")
 
 if __name__ == "__main__":
     main()
-
-
