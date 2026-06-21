@@ -24,8 +24,8 @@ def read_fasta_file(file_path):
     return pd.DataFrame(sequences) # преобразуем список словарей в объект pandas DataFrame и возвращаем его
 
 # поиск сайтов рестрикции в кольцевой ДНК с использованием удвоения цепочки
-def find_site_in_circular_dna(sequence_str, enzyme, plasmid_type="", verbose=True):
-    """Поиск сайтов рестрикции в кольцевой ДНК с использованием удвоения цепочки"""
+def find_site_in_circular_dna(sequence_str, enzyme, enzyme_name, plasmid_type="", verbose=True):
+
     if not sequence_str or enzyme is None:
         raise ValueError("Пустая последовательность или фермент не найден")
 
@@ -36,13 +36,14 @@ def find_site_in_circular_dna(sequence_str, enzyme, plasmid_type="", verbose=Tru
     valid_sites = sorted(list(set(sites[sites <= original_length])))
 
     if verbose:
-        # Получаем имя фермента прямо из объекта
-        enzyme_name = enzyme.__name__
+
         positions_str = ', '.join(str(int(pos)) for pos in valid_sites)
+
         if plasmid_type:
-            print(f"  {plasmid_type}: {enzyme_name} ({enzyme.site}) → {len(valid_sites)} сайт(ов). Позиции: {positions_str}")
+            print(f"  {plasmid_type}: {enzyme_name} ({enzyme.site}) → {len(valid_sites)} сайт. Позиции: {positions_str}")
+
         else:
-            print(f"  {enzyme_name} ({enzyme.site}): {len(valid_sites)} сайт(ов). Позиции: {positions_str}")
+            print(f"  {enzyme_name} ({enzyme.site}): {len(valid_sites)} сайт. Позиции: {positions_str}")
 
     return valid_sites
 
@@ -83,7 +84,6 @@ def validate_site(sites, enzyme_name, plasmid_name):
     return sites[0]
 
 # жмем на рычаг и клонируем: in silico рестрикция и лигирование фрагмента ДНК в вектор
-
 def perform_cloning(donor_seq, vector_seq, enz_d1, enz_d2, enz_v1, enz_v2):
 
     # проверяем, что все переданные объекты ферментов существуют
@@ -246,8 +246,13 @@ def select_enzyme_pair(exclude=None):
     available = [e for e in enzymes if e in Restriction.AllEnzymes and e not in exclude]
 
     print("\n Доступные ферменты:")
-    for i, enzyme in enumerate(available, 1):
-        print(f"{i:2}. {enzyme}")
+
+    # Две колонки
+    half = (len(available) + 1) // 2
+    for i in range(half):
+        left = f"{i + 1:2}. {available[i]:<8}"
+        right = f"{i + half + 1:2}. {available[i + half]:<8}" if i + half < len(available) else ""
+        print(f"{left:<15} {right}")
 
     print("\n Введите номера или названия через пробел")
 
@@ -265,34 +270,38 @@ def select_enzyme_pair(exclude=None):
                 idx = int(part) - 1
                 if idx < 0 or idx >= len(available):
                     print(f"Номер {part} вне диапазона")
+
                     break
 
                 selected.append(available[idx])
             else:
                 if part not in Restriction.AllEnzymes:
                     print(f"Фермент '{part}' не найден")
+
                     break
 
                 selected.append(part)
         else:
             if selected[0] == selected[1]:
                 print("Ферменты должны быть разными")
+
                 continue
 
             return selected[0], selected[1]
 
-
 def select_enzymes_for_cloning():
     print(f"\n{'=' * 50}\n Выбор ферментов для клонирования \n{'=' * 50}")
 
-    print("\n Ферменты для донора -")
+    print("\n --- Ферменты для донора ---")
     donor = select_enzyme_pair()
     if not donor:
+
         return None
 
     print("\n--- Ферменты для вектора ---")
     vector = select_enzyme_pair()
     if not vector:
+
         return None
 
     print(
