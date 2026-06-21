@@ -3,6 +3,8 @@ import numpy as np
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio import Restriction
+import os
+from tkinter import filedialog, Tk  # Добавляем инструменты для работы с окнами
 
 
 def read_fasta_file(file_path):
@@ -19,10 +21,11 @@ def read_fasta_file(file_path):
     return pd.DataFrame(sequences)
 
 
-def find_site_in_circular_dna(sequence_str, enzyme, verbose=False):
+def find_site_in_circular_dna(sequence_str, enzyme, verbose=True):
 
     if not sequence_str:
         raise ValueError("Последовательность не может быть пустой")
+
     if enzyme is None:
         raise ValueError("Фермент не найден в библиотеке")
 
@@ -45,20 +48,28 @@ def find_site_in_circular_dna(sequence_str, enzyme, verbose=False):
 
 
 def cut_circle_dna(sequence_str, pos):
-    # Нам больше не нужны ферменты внутри этой функции для логики срезов
     cut_1 = pos[0] - 1  # перевод в 0-based
     cut_2 = pos[1] - 1
 
-    # Вставка — это всегда путь ОТ cut_1 ДО cut_2 по часовой стрелке
+    # Получаем два варианта разреза кольца
     if cut_1 < cut_2:
-        fragment_between = sequence_str[cut_1:cut_2]
-        fragment_outside = sequence_str[cut_2:] + sequence_str[:cut_1]
+        frag_a = sequence_str[cut_1:cut_2]
+        frag_b = sequence_str[cut_2:] + sequence_str[:cut_1]
     else:
-        # Фрагмент перешагивает через физический конец строки
-        fragment_between = sequence_str[cut_1:] + sequence_str[:cut_2]
-        fragment_outside = sequence_str[cut_2:cut_1]
+        frag_a = sequence_str[cut_1:] + sequence_str[:cut_2]
+        frag_b = sequence_str[cut_2:cut_1]
 
-    return fragment_between, fragment_outside
+    # Для донора важен строгий порядок от enz_1 к enz_2
+    # Но для вектора остов — это ВСЕГДА большая часть кольца.
+    # Поэтому мы вернем оба фрагмента, упорядочив их по длине для удобства.
+    if len(frag_a) < len(frag_b):
+        short_fragment = frag_a
+        long_fragment = frag_b
+    else:
+        short_fragment = frag_b
+        long_fragment = frag_a
+
+    return short_fragment, long_fragment
 
 # теперь проверим совместимость концов по гороскопу
 def check_compatibility(enz_donor, enz_vector):
@@ -94,9 +105,7 @@ def validate_site(sites, enzyme_name, plasmid_name):
         raise ValueError(f"Сайт {enzyme_name} не найден в {plasmid_name}")
 
     if len(sites) > 1:
-        raise ValueError(
-            f"Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name}. Клонирование невозможно."
-        )
+        raise ValueError(f"Сайт {enzyme_name} встречается {len(sites)} раз в {plasmid_name}. Клонирование невозможно.")
 
     return sites[0]
 
@@ -112,10 +121,11 @@ def perform_cloning(
 ):
     # Проверка на одинаковые ферменты
     if enz_d1_name == enz_d2_name:
-        print("ОШИБКА: Для донора выбраны одинаковые ферменты!")
+        print("Для донора выбраны одинаковые ферменты")
         return None
+
     if enz_v1_name == enz_v2_name:
-        print("ОШИБКА: Для вектора выбраны одинаковые ферменты!")
+        print("Для вектора выбраны одинаковые ферменты!")
         return None
 
     enz_names = np.array([enz_d1_name, enz_d2_name, enz_v1_name, enz_v2_name])
@@ -205,28 +215,68 @@ def save_plasmid(sequence, filepath):
 
 
 
+
 def main():
-    # Пути к файлам в твоем проекте
-    donor_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pUC19_sequence.fasta"
-    vector_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\pBR322.fasta"
-    output_file = r"C:\Users\Nastya\PycharmProjects\plasmida_project\data\recombinant_plasmid.fasta"
+    # Создаем скрытое фоновое окно для работы файлового диалога
+    root = Tk()
+    root.withdraw()
+    root.attributes(
+        "-topmost", True
+    )  # Чтобы окно выбора появлялось поверх PyCharm
+
+    print("=== Выбор файлов плазмид ===")
+
+    # 1. Интерактивный выбор файла донора
+    print("Выберите FASTA-файл для плазмиды-ДОНОРА...")
+    donor_file = filedialog.askopenfilename(
+        title="Выберите плазмиду-донор",
+        filetypes=[("FASTA files", "*.fasta *.fa *.fna"), ("All files", "*.*")],
+    )
+    if not donor_file:
+        print("Выбор файла отменен. Выход из программы.")
+        return
+
+    # 2. Интерактивный выбор файла вектора
+    print("Выберите FASTA-файл для векторной плазмиды...")
+    vector_file = filedialog.askopenfilename(
+        title="Выберите векторную плазмиду",
+        filetypes=[("FASTA files", "*.fasta *.fa *.fna"), ("All files", "*.*")],
+    )
+    if not vector_file:
+        print("Выбор файла отменен. Выход из программы.")
+        return
+
+    # Фиксированное имя файла для автоматического ОБНОВЛЕНИЯ результата.
+    # Файл создастся в той же папке, откуда вы загрузили вектор.
+    vector_dir = os.path.dirname(vector_file)
+    output_file = os.path.join(vector_dir, "recombinant_plasmid.fasta")
 
     # Чтение данных
-
-    donor_df = read_fasta_file(donor_file)
-    vector_df = read_fasta_file(vector_file)
+    try:
+        donor_df = read_fasta_file(donor_file)
+        vector_df = read_fasta_file(vector_file)
+    except Exception as e:
+        print(f"\nОШИБКА ЧТЕНИЯ ФАЙЛОВ: {e}")
+        print("Убедитесь, что вы выбрали корректные FASTA-файлы.")
+        return
 
     donor_seq = donor_df.loc[0, "sequence"]
     vector_seq = vector_df.loc[0, "sequence"]
 
-    print(f"Донор: {donor_df.loc[0, 'id']} - {donor_df.loc[0, 'length']} п.н.")
-    print(f"Вектор: {vector_df.loc[0, 'id']} - {vector_df.loc[0, 'length']} п.н.\n")
+    # Вытаскиваем имена файлов без путей для красивого лога
+    donor_name = os.path.splitext(os.path.basename(donor_file))[0]
+    vector_name = os.path.splitext(os.path.basename(vector_file))[0]
+
+    print("\n" + "=" * 40)
+    print(f"Донор: {donor_name} - {donor_df.loc[0, 'length']} п.н.")
+    print(f"Вектор: {vector_name} - {vector_df.loc[0, 'length']} п.н.")
+    print("=" * 40 + "\n")
 
     print("Введите ферменты для клонирования:")
-    print("Доступные ферменты: EcoRI, HindIII, BamHI, XhoI, SalI, PstI, KpnI, NdeI\n")
+    print(
+        "Доступные ферменты: EcoRI, HindIII, BamHI, XhoI, SalI, PstI, KpnI, NdeI\n"
+    )
 
-    # Считываем ввод и нормализуем регистр названий (делаем первую букву заглавной, остальные как в стандартах,
-    # но лучше просто убрать пробелы, а в perform_cloning Biopython сам разберется, если они соответствуют номенклатуре)
     enz_d1 = input("1-й фермент для донора: ").strip()
     enz_d2 = input("2-й фермент для донора: ").strip()
     enz_v1 = input("1-й фермент для вектора: ").strip()
@@ -235,22 +285,27 @@ def main():
     # Выполнение клонирования
     print("\n" + "=" * 60)
     final_plasmid = perform_cloning(
-        donor_seq,
-        vector_seq,
-        enz_d1,
-        enz_d2,
-        enz_v1,
-        enz_v2
+        donor_seq, vector_seq, enz_d1, enz_d2, enz_v1, enz_v2
     )
 
-    if final_plasmid:
+    if final_plasmid is not None:
         print("\n" + "=" * 60)
         print_results(final_plasmid, vector_seq)
-        save_plasmid(final_plasmid, output_file)
+
+        # Сохранение с флагом "w" — файл перезапишется и обновится в PyCharm автоматически
+        with open(output_file, "w") as f:
+            f.write(f">recombinant_plasmid_size_{len(final_plasmid)}bp\n")
+            for i in range(0, len(final_plasmid), 60):
+                f.write(final_plasmid[i : i + 60] + "\n")
+
+        print(f"Результат успешно обновлен в файле: {output_file}")
+
+        # Выводим превью прямо в консоль PyCharm для удобства проверки
+        print("\n--- Первые 300 п.н. полученной последовательности ---")
+        print(final_plasmid[:300] + "...")
+        print("-----------------------------------------------------\n")
     else:
         print("\nКлонирование не удалось.")
-
-
 if __name__ == "__main__":
     main()
 
